@@ -126,3 +126,17 @@ def test_last_data_row_ignores_styled_empty_rows(mini_master):
     workbook = openpyxl.load_workbook(mini_master)
     sheet = workbook["Competitors_All-Master"]
     assert _last_data_row(sheet, 3) == 5, "4 Datenzeilen + Headerzeile"
+
+
+@pytest.mark.parametrize("name,version,expected", [
+    # Explizite Version ersetzt ein vorhandenes Suffix, auch ein untypisches.
+    ("Competitive_Intel_Master_DB_v2.2r.xlsx", "2.3",
+     "Competitive_Intel_Master_DB_v2.3.xlsx"),
+    ("Competitive_Intel_Master_DB_v1.7_short.xlsx", "2.0",
+     "Competitive_Intel_Master_DB_v2.0.xlsx"),
+    # Ohne Versionssuffix wird angehaengt.
+    ("Master.xlsx", "2.3", "Master_v2.3.xlsx"),
+])
+def test_bump_filename_replaces_odd_version_suffix(name, version, expected):
+    """Regression: aus _v2.2r + 2.3 wurde faelschlich _v2.2r_v2.3."""
+    assert _bump_filename(name, version) == expected

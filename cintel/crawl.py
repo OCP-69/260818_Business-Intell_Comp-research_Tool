@@ -355,20 +355,41 @@ def _nav_candidates(home: Page, start_url: str) -> list[str]:
     return out
 
 
+def _name_variants(company: str) -> list[str]:
+    """
+    Zerlegt zusammengesetzte Firmennamen in einzeln pruefbare Varianten.
+
+    "CAESES (Friendship Systems)" -> ["caesesfriendshipsystems", "caeses",
+                                      "friendshipsystems"]
+
+    Noetig, weil die Master-DB Namen mit Klammerzusatz oder Schraegstrich
+    enthaelt, der Webauftritt aber nur einen der Teile fuehrt. Ohne die
+    Zerlegung lehnt das Verifikations-Gate korrekte Seiten faelschlich ab.
+    """
+    raw = str(company or "")
+    variants = [_name_core(raw)]
+    for part in re.split(r"[(){}\[\]/|]|\s+-\s+", raw):
+        core = _name_core(part)
+        if core and core not in variants:
+            variants.append(core)
+    return [v for v in variants if len(v) >= 3]
+
+
 def _name_matches(company: str, page: Page) -> bool:
     """
     Prueft, ob der Firmenname auf der Seite vorkommt.
 
-    Toleriert Rechtsformen und Sonderzeichen: "Makersite GmbH" matcht
-    "makersite". Sehr kurze Namen (< 3 Zeichen) werden nicht geprueft, weil
-    sie zu viele Falschtreffer erzeugen.
+    Toleriert Rechtsformen, Sonderzeichen und Klammerzusaetze: "Makersite
+    GmbH" matcht "makersite", "CAESES (Friendship Systems)" matcht eine
+    Seite, die nur "CAESES" fuehrt. Sehr kurze Namen (< 3 Zeichen) werden
+    nicht geprueft, weil sie zu viele Falschtreffer erzeugen.
     """
-    core = _name_core(company)
-    if len(core) < 3:
+    variants = _name_variants(company)
+    if not variants:
         return True
     haystack = f"{page.title} {page.text[:8000]} {page.url}".lower()
     haystack = re.sub(r"[^a-z0-9]+", "", haystack)
-    return core in haystack
+    return any(variant in haystack for variant in variants)
 
 
 def _name_core(company: str) -> str:
