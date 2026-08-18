@@ -1,0 +1,136 @@
+# Kontrolliertes Vokabular der Competitive Intel Master DB.
+# Generiert aus Competitive_Intel_Master_DB_v2.2.xlsx (Sheet Legend_Categories
+# + beobachtete Werte in Competitors_All-Master, 918 Zeilen / 374 Firmen).
+#
+# WICHTIG: Der Extractor darf NUR Werte aus diesen Listen schreiben.
+# Neue Werte muessen hier bewusst ergaenzt werden - sonst driftet die DB
+# wieder auseinander (v2.2 hatte 34 "Key Categories" statt 8).
+
+key_categories:
+  - "1. Design & Authoring (CAD/BIM)"
+  - "2. Simulation & Analysis (CAE)"
+  - "3. Manufacturing & Production (CAM/MES)"
+  - "4. Lifecycle & Data Management (PLM/PDM)"
+  - "5. Sustainability & Compliance (LCA/DPP)"
+  - "6. Industrial AI & Future Engineering"
+  - "7. Supply Chain & Operations"
+  - "8. Specialized & Cross-cutting"
+
+# Drift-Varianten aus v2.2 -> kanonische Kategorie.
+# Werden von `cintel repair` und beim Merge automatisch normalisiert.
+key_category_aliases:
+  "Supply Chain & Quality": "7. Supply Chain & Operations"
+  "5. Supply Chain & Procurement": "7. Supply Chain & Operations"
+  "Manufacturing & Factory": "3. Manufacturing & Production (CAM/MES)"
+  "4. Cost Engineering & Value Analysis": "8. Specialized & Cross-cutting"
+  "7. Testing & Validation": "8. Specialized & Cross-cutting"
+  "UNMAPPED": null
+
+sub_categories:
+  - "3D Content & Visualization"
+  - "AI & Surrogate Simulation"
+  - "Additive Manufacturing"
+  - "BIM & Construction"
+  - "CAD & Modeling"
+  - "CAM & CNC"
+  - "Carbon & Eco-Design"
+  - "Circular Economy & R-Strategies"
+  - "Core CAE / CFD / FEA"
+  - "Cost Engineering & Value Analysis"
+  - "EDA / ECAD"
+  - "Engineering Collaboration & Data"
+  - "Engineering Copilots & AI Assistants"
+  - "Engineering Education"
+  - "Factory Intelligence & IoT"
+  - "Generative & Computational Design"
+  - "Industrial AI & Robotics"
+  - "LCA Software & Platforms"
+  - "MBSE & Systems Engineering"
+  - "MES & Production OS"
+  - "Materials Science & Selection"
+  - "Optimization & Design Exploration"
+  - "Other / Cross-cutting"
+  - "PLM & PDM Platforms"
+  - "Quality & Inspection"
+  - "Regulatory & Compliance (DPP)"
+  - "Supply Chain & Procurement"
+  - "Supply Chain & RFQ & CPQ"
+  - "Sustainability Reporting & ESG"
+  - "Testing & Validation"
+
+sub_category_aliases:
+  "8. Other / Cross-cutting": "Other / Cross-cutting"
+  "AI & ML Tools": "Engineering Copilots & AI Assistants"
+
+# Welche Sub-Kategorien unter welcher Key Category zulaessig sind.
+# Aus dem Legend_Categories-Sheet, dedupliziert.
+legend:
+  "1. Design & Authoring (CAD/BIM)":
+    ["3D Content & Visualization", "BIM & Construction", "CAD & Modeling",
+     "CAM & CNC", "Engineering Education", "Generative & Computational Design",
+     "PLM & PDM Platforms"]
+  "2. Simulation & Analysis (CAE)":
+    ["AI & Surrogate Simulation", "Core CAE / CFD / FEA", "EDA / ECAD",
+     "Engineering Copilots & AI Assistants", "Materials Science & Selection",
+     "Optimization & Design Exploration"]
+  "3. Manufacturing & Production (CAM/MES)":
+    ["Additive Manufacturing", "CAM & CNC", "Factory Intelligence & IoT",
+     "Generative & Computational Design", "Industrial AI & Robotics",
+     "MES & Production OS", "Other / Cross-cutting", "PLM & PDM Platforms",
+     "Quality & Inspection"]
+  "4. Lifecycle & Data Management (PLM/PDM)":
+    ["CAD & Modeling", "Engineering Collaboration & Data",
+     "MBSE & Systems Engineering", "PLM & PDM Platforms"]
+  "5. Sustainability & Compliance (LCA/DPP)":
+    ["Carbon & Eco-Design", "Circular Economy & R-Strategies",
+     "LCA Software & Platforms", "MES & Production OS", "Other / Cross-cutting",
+     "PLM & PDM Platforms", "Regulatory & Compliance (DPP)"]
+  "6. Industrial AI & Future Engineering":
+    ["AI & Surrogate Simulation", "Engineering Copilots & AI Assistants",
+     "Engineering Education", "Factory Intelligence & IoT",
+     "Industrial AI & Robotics", "Supply Chain & Procurement"]
+  "7. Supply Chain & Operations":
+    ["Additive Manufacturing", "CAM & CNC", "MES & Production OS",
+     "Supply Chain & Procurement", "Supply Chain & RFQ & CPQ"]
+  "8. Specialized & Cross-cutting":
+    ["Engineering Education", "Materials Science & Selection",
+     "Other / Cross-cutting"]
+
+# Kanonische Schreibweise mit Halbgeviertstrich (U+2013).
+# v2.2 enthaelt kaputte Varianten ("Tier 3 <?> Beobachten") -> `cintel repair`.
+competitor_tier:
+  - "Tier 1 \u2013 Direkt"
+  - "Tier 2 \u2013 Nachbar"
+  - "Tier 3 \u2013 Beobachten"
+
+beachhead_relevanz:
+  - "Cross-cutting"
+  - "Medtech"
+  - "Machinery"
+  - "Consumer Goods"
+  - "EEE/Packaging"
+  - "Adjacent"
+  - "Peripheral"
+
+lfl_dimension:
+  - "Design/CAD"
+  - "LCA/CO2"
+  - "PLM/BOM"
+  - "RFQ/CPQ"
+  - "Packaging/EEE"
+  - "Cost Estimation"
+  - "Design & Engineering"
+  - "Manufacturing & Production"
+  - "Supply Chain & Procurement"
+  - "Sustainability & Compliance"
+  - "Data & Analytics"
+  - "Collaboration & Knowledge"
+
+r_strategies:
+  - "AVOID"
+  - "REUSE"
+  - "RECYCLE"
+
+row_kind:
+  company: "Company information"
+  product: "Product"

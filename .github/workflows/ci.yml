@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Abhaengigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Lint
+        run: ruff check cintel tests scripts
+
+      - name: Konfiguration validieren
+        run: |
+          python -c "
+          import yaml, sys
+          from pathlib import Path
+          sys.path.insert(0, '.')
+          from cintel.schema import Taxonomy, N_COLUMNS
+          t = Taxonomy.load('config/taxonomy.yaml')
+          assert len(t.key_categories) == 8, t.key_categories
+          assert len(t.competitor_tier) == 3
+          for tier in t.competitor_tier:
+              assert '–' in tier, f'Tier ohne Halbgeviertstrich: {tier!r}'
+          for key, subs in t.legend.items():
+              assert key in t.key_categories, key
+              for sub in subs:
+                  assert sub in t.sub_categories, sub
+          yaml.safe_load(Path('config/targets.yaml').read_text(encoding='utf-8'))
+          print(f'Taxonomie ok, {N_COLUMNS} Spalten im Vertrag')
+          "
+
+      - name: Tests
+        run: python -m pytest tests/ -v
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # doctor darf ohne claude-CLI scheitern (Exit 1) - geprueft wird nur,
+      # dass die CLI startet und die Diagnose ausgibt.
+      - name: CLI startet
+        run: |
+          python -m cintel --help
+          python -m cintel doctor || true
+          python -m cintel run --help
