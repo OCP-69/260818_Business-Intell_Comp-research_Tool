@@ -52,6 +52,27 @@ DISCOVERY_SCHEMA: dict[str, Any] = {
     },
 }
 
+# Eigener System-Prompt fuer die Suche.
+#
+# Der Extraktions-Prompt ("erfinde nichts, lass Felder lieber leer") ist hier
+# genau falsch: kombiniert mit einer langen Ausschlussliste liefert das Modell
+# dann gar keine Treffer mehr - beobachtet im ersten Echtlauf, 0 Kandidaten
+# aus drei Suchzellen.
+#
+# Die Suche DARF grosszuegig sein, weil jeder Kandidat anschliessend das
+# Crawl-Gate passieren muss: Homepage abrufbar und Firmenname auf der Seite.
+# Erfundenes faellt dort auf und landet in rejected.csv. Vorsicht an dieser
+# Stelle bringt nichts ausser leeren Ergebnissen.
+DISCOVERY_SYSTEM_PROMPT = (
+    "You are a B2B market researcher for industrial software. You actively "
+    "search the web and report every plausible company you find in the "
+    "requested segment. Report a company whenever your search results show "
+    "it exists; take its homepage URL from those results rather than "
+    "constructing one. Downstream automation verifies every URL, so being "
+    "comprehensive is more useful than being cautious - but never invent a "
+    "company you did not find. Answer only with the requested structured data."
+)
+
 DISCOVERY_PROMPT = """\
 Finde reale Unternehmen im folgenden Marktsegment. Nutze Websuche.
 
@@ -71,11 +92,18 @@ BEREITS BEKANNT (nicht erneut nennen)
 {known}
 
 REGELN
-- Nur real existierende Unternehmen mit eigener Website.
-- `homepage` muss die offizielle Startseite sein, keine LinkedIn-, Crunchbase-
-  oder Verzeichnisseite.
-- Rate NIEMALS eine Domain. Wenn du die Startseite nicht sicher kennst,
-  nenne das Unternehmen nicht.
+- Suche aktiv im Web. Nenne jedes Unternehmen, das deine Suchergebnisse als
+  real existierend ausweisen.
+- `homepage` ist die offizielle Startseite, uebernommen aus den
+  Suchergebnissen - keine LinkedIn-, Crunchbase- oder Verzeichnisseite.
+  Setze keine Domain aus dem Firmennamen zusammen.
+- Die Liste unter BEREITS BEKANNT dient nur der Dublettenvermeidung. Sie ist
+  kein Hinweis darauf, dass der Markt erschoepft waere - suche unabhaengig
+  davon.
+- Lieber ein Kandidat zu viel als einer zu wenig: jede Adresse wird
+  anschliessend automatisch geprueft, nicht erreichbare Eintraege fallen
+  heraus. Gib nur dann nichts zurueck, wenn die Suche wirklich nichts
+  hergibt.
 - Hoechstens {max_results} Unternehmen.
 """
 
@@ -171,6 +199,7 @@ def discover_new(
                     result = call_claude(
                         prompt, DISCOVERY_SCHEMA, model=model,
                         tools="WebSearch,WebFetch",
+                        system_prompt=DISCOVERY_SYSTEM_PROMPT,
                     )
                 except LLMError as exc:
                     log.warning("Discovery %s/%s/%s fehlgeschlagen: %s",

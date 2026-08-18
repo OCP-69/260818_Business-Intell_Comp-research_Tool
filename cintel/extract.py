@@ -339,8 +339,12 @@ class Extractor:
         try:
             result = call_codex(prompt, schema, timeout=self.timeout)
         except LLMError as exc:
-            log.warning("Cross-Check fuer %s fehlgeschlagen: %s", crawl.company, exc)
-            return {"available": False, "error": str(exc)}
+            # Der Cross-Check ist eine Zusatzpruefung. Faellt er aus, wird das
+            # gemeldet - der Lauf laeuft aber vollstaendig weiter.
+            message = " ".join(str(exc).split())[:200]
+            log.warning("Cross-Check fuer %s nicht moeglich: %s",
+                        crawl.company, message)
+            return {"available": False, "error": message}
 
         self.ledger.add(f"crosscheck:{crawl.company}", result.usage)
         info = primary.get("company_info", {}) or {}

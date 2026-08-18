@@ -6,7 +6,15 @@ import json
 
 import pytest
 
-from cintel.crawl import Crawler, Page, _name_core, _name_matches, _name_variants
+from cintel.crawl import (
+    Crawler,
+    Page,
+    _is_about,
+    _is_relevant,
+    _name_core,
+    _name_matches,
+    _name_variants,
+)
 from cintel.extract import _clean, build_schema
 from cintel.masterdb import MasterDB
 from cintel.merge import MergePlan, Merger
@@ -199,3 +207,56 @@ def test_name_matches_still_rejects_unrelated_site():
     page = Page(url="https://www.caeses.com", status=200,
                 title="CAESES | CAD", text="CAESES software")
     assert not _name_matches("Siemens Digital Industries", page)
+
+
+# ------------------------------------------------------- Ueber-uns-Seiten
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://x.de/about-us", True),
+    ("https://x.de/ueber-uns", True),
+    ("https://x.de/en/company", True),
+    ("https://x.de/team", True),
+    ("https://x.de/products/foo", False),
+    ("https://x.de/pricing", False),
+])
+def test_is_about_detects_company_pages(url, expected):
+    assert _is_about(url) is expected
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("/products", True),
+    ("/about-us", True),
+    ("/impressum", True),
+    ("/irgendwas-anderes", False),
+])
+def test_is_relevant_covers_products_and_company(path, expected):
+    assert _is_relevant(path) is expected
+
+
+def test_about_pages_are_fetched_before_product_pages(tmp_path):
+    """
+    Regression: die Company-Level-Felder (Gruendungsjahr, Standort,
+    Mitarbeiterzahl) stehen auf der Ueber-uns-Seite. Ohne Vorrang fiel
+    sie bei knappem Seitenbudget als erstes weg - im ersten Echtlauf des
+    new-Modus blieben zwei von drei Firmen ohne diese Angaben.
+    """
+    crawler = Crawler(cache_dir=tmp_path / "cache", offline=True, max_pages=3)
+    home = Page(
+        url="https://x.example", status=200, title="X GmbH",
+        text="X GmbH Startseite",
+        links=[
+            "https://x.example/products/a",
+            "https://x.example/products/b",
+            "https://x.example/products/c",
+            "https://x.example/about-us",
+        ],
+    )
+    crawler._write_cache(home)
+    for url in ["https://x.example/products/a", "https://x.example/products/b",
+                "https://x.example/products/c", "https://x.example/about-us"]:
+        crawler._write_cache(Page(url=url, status=200, title="t", text="Inhalt"))
+
+    result = crawler.crawl_company("X", "https://x.example")
+    assert result.verified
+    fetched = [p.url for p in result.pages]
+    assert "https://x.example/about-us" in fetched, "Ueber-uns muss dabei sein"

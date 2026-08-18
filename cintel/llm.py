@@ -8,12 +8,30 @@ Optional: `codex exec` (ChatGPT Pro) als unabhaengige Zweitmeinung
 Verifizierte Eigenschaften der Claude-CLI (v2.1.219):
   --output-format json   liefert ein Result-Objekt mit Feld `structured_output`
   --json-schema <schema> erzwingt Schema-Konformitaet der Antwort
-  --tools "WebSearch,WebFetch"  beschraenkt auf Recherche-Werkzeuge
-  --permission-mode dontAsk     laeuft ohne Rueckfrage durch
+  --tools "WebSearch,WebFetch"  legt fest, WELCHE Werkzeuge existieren
+  --allowedTools "..."          gibt sie zusaetzlich FREI - zwingend noetig
+  --permission-mode dontAsk     fragt nicht nach und verweigert im Zweifel
   --system-prompt        ERSETZT den Default-Prompt (spart ~11k Cache-Token/Call)
 
-ACHTUNG: --bare darf NICHT gesetzt werden. Das Flag deaktiviert OAuth und
-Keychain und erzwingt einen ANTHROPIC_API_KEY - genau das, was wir vermeiden.
+Drei Fallen, alle im Betrieb aufgetreten:
+
+1. --bare darf NICHT gesetzt werden. Es deaktiviert OAuth und Keychain und
+   erzwingt einen ANTHROPIC_API_KEY - genau das, was wir vermeiden.
+
+2. --tools allein genuegt nicht. "dontAsk" heisst nicht "erlaube
+   stillschweigend", sondern "frage nicht und VERWEIGERE". Ohne
+   --allowedTools meldet die CLI intern "Permission to use WebSearch has
+   been denied because Claude Code is running in don't ask mode" - und das
+   Modell liefert daraufhin eine leere, aber schema-gueltige Antwort. Der
+   Fehler sieht dann aus wie "nichts gefunden" statt wie ein Fehler.
+
+3. CLIs immer ueber shutil.which aufloesen. Unter Windows legt npm Wrapper
+   als .CMD an, die CreateProcess nicht direkt starten kann - der blosse
+   Name scheitert mit "[WinError 2]", obwohl das Programm installiert ist.
+
+Hinweis zur Messung: `usage.server_tool_use.web_search_requests` bleibt auch
+bei erfolgreicher Suche 0, weil Claude Code die Websuche clientseitig
+ausfuehrt. Der Zaehler taugt nicht als Beleg dafuer, ob gesucht wurde.
 """
 
 from __future__ import annotations
@@ -70,8 +88,21 @@ class LLMResult:
 # Claude Code CLI
 # --------------------------------------------------------------------------
 
+def _resolve(program: str) -> str | None:
+    """
+    Vollstaendigen Pfad einer CLI ermitteln.
+
+    Der blosse Name genuegt unter Windows NICHT: npm legt Wrapper als
+    .CMD an, und CreateProcess kann .CMD nicht direkt starten - nur .EXE.
+    `codex` scheiterte deshalb mit "[WinError 2] Das System kann die
+    angegebene Datei nicht finden", obwohl es installiert war.
+    shutil.which loest ueber PATHEXT korrekt auf codex.CMD auf.
+    """
+    return shutil.which(program)
+
+
 def claude_available() -> bool:
-    return shutil.which("claude") is not None
+    return _resolve("claude") is not None
 
 
 def call_claude(
@@ -117,7 +148,7 @@ def call_claude(
         # mit "[WinError 206] Der Dateiname oder die Erweiterung ist zu lang"
         # fehl.
         cmd = [
-            "claude", "-p",
+            _resolve("claude") or "claude", "-p",
             "--output-format", "json",
             "--json-schema", schema_json,
             "--system-prompt", system_prompt,
@@ -127,6 +158,19 @@ def call_claude(
         ]
         # --tools "" schaltet alle Tools ab; das Flag muss trotzdem gesetzt sein.
         cmd += ["--tools", tools]
+
+        # Werden Tools gebraucht, muessen sie ZUSAETZLICH freigegeben werden.
+        #
+        # --permission-mode dontAsk bedeutet nicht "erlaube stillschweigend",
+        # sondern "frage nicht und VERWEIGERE". Ohne --allowedTools meldet die
+        # CLI intern:
+        #   "Permission to use WebSearch has been denied because Claude Code
+        #    is running in don't ask mode"
+        # Das Modell liefert dann eine leere, aber schema-gueltige Antwort -
+        # der Fehler faellt also nicht als Fehler auf, sondern als "nichts
+        # gefunden". Genau daran scheiterte der gesamte new-Modus.
+        if tools:
+            cmd += ["--allowedTools", tools]
 
         try:
             proc = subprocess.run(
@@ -234,7 +278,7 @@ def _salvage_json(text: str) -> dict[str, Any] | None:
 # --------------------------------------------------------------------------
 
 def codex_available() -> bool:
-    return shutil.which("codex") is not None
+    return _resolve("codex") is not None
 
 
 def call_codex(
@@ -264,7 +308,7 @@ def call_codex(
         # "-" laesst codex die Anweisung von stdin lesen - gleiche
         # Kommandozeilen-Begrenzung wie bei claude.
         cmd = [
-            "codex", "exec", "-",
+            _resolve("codex") or "codex", "exec", "-",
             "--output-schema", str(schema_path),
             "-o", str(out_path),
             "--sandbox", "read-only",
@@ -282,11 +326,29 @@ def call_codex(
             )
         except subprocess.TimeoutExpired as exc:
             raise LLMError(f"codex-CLI Timeout nach {timeout}s") from exc
+        except OSError as exc:
+            # z.B. WinError 2, wenn der Wrapper nicht startbar ist. Der
+            # Cross-Check ist eine Zusatzpruefung - er darf den Lauf nicht
+            # abbrechen.
+            raise LLMError(f"codex-CLI nicht ausfuehrbar: {exc}") from exc
 
         if not out_path.exists():
+            combined = f"{proc.stderr} {proc.stdout}".lower()
+            # Fehlende Anmeldung ist der haeufigste Fall und durch
+            # Wiederholen nicht zu beheben - dann lieber klar ansagen, was
+            # zu tun ist, statt den rohen API-Fehler auszugeben.
+            if any(marker in combined for marker in
+                   ("invalid_refresh_token", "unauthorized", "not logged in",
+                    "please login", "401")):
+                raise LLMError(
+                    "codex ist nicht angemeldet (ChatGPT Pro). Einmalig "
+                    "`codex login` ausfuehren. Der Cross-Check ist optional - "
+                    "der Lauf funktioniert auch ohne ihn."
+                )
+            detail = " ".join(proc.stderr.split())[:200]
             raise LLMError(
                 f"codex lieferte keine Ausgabedatei (Exit {proc.returncode}): "
-                f"{proc.stderr.strip()[:300]}"
+                f"{detail}"
             )
         raw = out_path.read_text(encoding="utf-8", errors="replace")
 

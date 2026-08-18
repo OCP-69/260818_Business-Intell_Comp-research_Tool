@@ -904,7 +904,13 @@ Lauf-Ordner  : data\\outputs\\run_20260818_230425""")]
         ["Zahlen sollen doppelt geprueft werden",
          "Beim Start <font face='Courier'>--cross-check codex</font> anhaengen. "
          "Gruendungsjahr, Mitarbeiterzahl und Standort werden dann unabhaengig "
-         "nachgeprueft und Abweichungen gemeldet"],
+         "nachgeprueft und Abweichungen gemeldet. Setzt voraus, dass "
+         "<font face='Courier'>codex login</font> einmal ausgefuehrt wurde"],
+        ["Gruendungsjahr und Mitarbeiterzahl bleiben leer",
+         "Diese Angaben stehen auf der Ueber-uns-Seite. Das Tool ruft sie "
+         "bevorzugt ab, aber nicht jede Firma veroeffentlicht sie. "
+         "Finanzierungsrunde und Umsatz stehen fast nie auf der eigenen "
+         "Website - die muessen von Hand ergaenzt werden"],
         ["Marktsegmente fuer Betriebsart <i>new</i> aendern",
          "Im Abschnitt <font face='Courier'>new:</font> die Eintraege unter "
          "<font face='Courier'>key_categories</font>, "
@@ -1241,6 +1247,16 @@ Lauf-Ordner  : data\\outputs\\run_20260818_230425""")]
         ["<font face='Courier'>Profil '...' gibt es nicht</font>",
          "Tippfehler im Profilnamen. Liste anzeigen mit "
          "<font face='Courier'>py -m cintel profiles</font>"],
+        ["<font face='Courier'>codex ist nicht angemeldet</font>",
+         "Betrifft nur <font face='Courier'>--cross-check codex</font>. "
+         "Einmalig <font face='Courier'>codex login</font> ausfuehren. Der "
+         "Lauf selbst geht trotzdem vollstaendig durch - die Zweitpruefung "
+         "entfaellt lediglich"],
+        ["<font face='Courier'>Sub Category '...' passt zu keiner der "
+         "gewaehlten Key Categories</font>",
+         "In Ihrem Profil gehoert eine Sub-Kategorie nicht zur gewaehlten "
+         "Hauptkategorie. Die Meldung nennt, wohin sie gehoert. Siehe "
+         "Kapitel 10.3"],
         ["<font face='Courier'>durch robots.txt untersagt</font>",
          "Kein Fehler. Diese Firma verbietet automatisches Auslesen. Die Angaben "
          "muessen von Hand ergaenzt werden"],

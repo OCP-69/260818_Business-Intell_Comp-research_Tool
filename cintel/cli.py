@@ -321,7 +321,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.dry_run or (not plan.new_rows and not plan.updates):
         write_run_artifacts(run_dir, plan=plan, rejected=rejected,
                             sources=sources, report_text=report_text)
-        print(f"\n(Probelauf - keine xlsx geschrieben.) Artefakte: {run_dir}")
+        # Zwei verschiedene Gruende, dieselbe Folge - aber sie duerfen nicht
+        # gleich klingen. "Probelauf" bei einem echten Lauf ohne Ergebnis
+        # verschleiert, dass nichts gefunden wurde.
+        if args.dry_run:
+            reason = "Probelauf - keine xlsx geschrieben."
+        else:
+            reason = ("Nichts einzutragen - keine xlsx geschrieben. "
+                      "Gruende stehen im Bericht.")
+        print(f"\n({reason}) Artefakte: {run_dir}")
         return 0
 
     target = merger.apply(plan, args.out_dir, version=args.version)

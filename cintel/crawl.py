@@ -40,9 +40,25 @@ PRODUCT_PATH_HINTS = (
     "services", "leistungen", "technology", "technologie", "pricing", "preise",
 )
 
+# Seiten mit Angaben zum Unternehmen selbst: Gruendungsjahr, Standort,
+# Mitarbeiterzahl, Finanzierungsstand.
+#
+# Ohne diese Seiten blieben genau die Company-Level-Felder leer. Im ersten
+# Echtlauf des new-Modus hatten zwei von drei neuen Firmen weder
+# Gruendungsjahr noch Standort noch Mitarbeiterzahl - die Angaben standen
+# auf der Ueber-uns-Seite, die der Crawler gar nicht besucht hatte.
+ABOUT_PATH_HINTS = (
+    "/about", "/ueber-uns", "/über-uns", "/ueberuns", "/company", "/unternehmen",
+    "/team", "/wir", "/who-we-are", "/our-story", "/story", "/mission",
+    # Impressum und Imprint sind im DACH-Raum gesetzlich vorgeschrieben und
+    # nennen verlaesslich Sitz und Rechtsform - fuer die Spalte Location
+    # oft die einzige belastbare Quelle.
+    "/impressum", "/imprint",
+)
+
 # Diese Pfade sind fuer die Extraktion wertlos.
 SKIP_PATH_HINTS = (
-    "/blog", "/news", "/career", "/karriere", "/jobs", "/legal", "/impressum",
+    "/blog", "/news", "/career", "/karriere", "/jobs", "/legal",
     "/privacy", "/datenschutz", "/terms", "/agb", "/login", "/signin",
     "/cookie", "/press", "/presse", "/event", "/webinar", "/support",
     "/download", "/cdn-cgi", "/wp-content", "/wp-admin",
@@ -275,7 +291,15 @@ class Crawler:
             if link not in candidates:
                 candidates.append(link)
 
-        for link in candidates:
+        # Ueber-uns-Seiten zuerst abrufen, aber hoechstens zwei davon.
+        # Sie tragen die Company-Level-Felder (Gruendungsjahr, Standort,
+        # Mitarbeiterzahl); ohne Vorrang faellt bei knappem Seitenbudget
+        # ausgerechnet die eine Seite weg, die diese Angaben haette.
+        about = [u for u in candidates if _is_about(u)][:2]
+        rest = [u for u in candidates if u not in about]
+        ordered = about + rest
+
+        for link in ordered:
             if len(result.pages) >= self.max_pages:
                 break
             if link == start_url:
@@ -327,7 +351,7 @@ def _sitemap_candidates(crawler: Crawler, start_url: str) -> list[str]:
             continue
         if any(skip in path for skip in SKIP_PATH_HINTS):
             continue
-        if any(hint in path for hint in PRODUCT_PATH_HINTS):
+        if _is_relevant(path):
             clean = url.split("#")[0].rstrip("/")
             if clean not in scored:
                 scored.append(clean)
@@ -350,9 +374,21 @@ def _nav_candidates(home: Page, start_url: str) -> list[str]:
         path = parsed.path.lower()
         if path.endswith(BINARY_SUFFIXES) or any(s in path for s in SKIP_PATH_HINTS):
             continue
-        if any(hint in path for hint in PRODUCT_PATH_HINTS) and link not in out:
+        if _is_relevant(path) and link not in out:
             out.append(link)
     return out
+
+
+def _is_about(url: str) -> bool:
+    """Zeigt die URL auf eine Seite ueber das Unternehmen selbst?"""
+    path = urlparse(url).path.lower().rstrip("/")
+    return any(hint in path for hint in ABOUT_PATH_HINTS)
+
+
+def _is_relevant(path: str) -> bool:
+    """Produkt- ODER Unternehmensseite - beides wird gebraucht."""
+    return (any(hint in path for hint in PRODUCT_PATH_HINTS)
+            or any(hint in path for hint in ABOUT_PATH_HINTS))
 
 
 def _name_variants(company: str) -> list[str]:
