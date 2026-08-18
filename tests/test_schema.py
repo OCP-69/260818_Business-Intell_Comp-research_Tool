@@ -91,3 +91,29 @@ def test_join_and_split_multi():
     assert join_multi("sub_category", ["X", "Y"]) == "X; Y"
     assert split_multi("A | B; C") == ["A", "B", "C"]
     assert split_multi(None) == []
+
+
+def test_every_sub_category_belongs_to_a_key_category(taxonomy):
+    """
+    Jede Sub-Kategorie muss in der Legende mindestens einer Hauptkategorie
+    zugeordnet sein.
+
+    Verwaiste Werte sind gefaehrlich: die Discovery filtert Sub-Kategorien
+    gegen die Legende und verwirft nicht zuordenbare stillschweigend - der
+    Lauf sucht dann ueber alles statt gezielt. Drei Werte waren anfangs
+    verwaist (Cost Engineering & Value Analysis, Sustainability Reporting &
+    ESG, Testing & Validation).
+    """
+    assigned = set()
+    for subs in taxonomy.legend.values():
+        assigned.update(subs)
+    orphans = [s for s in taxonomy.sub_categories if s not in assigned]
+    assert not orphans, f"keiner Hauptkategorie zugeordnet: {orphans}"
+
+
+def test_legend_has_no_entries_outside_the_vocabulary(taxonomy):
+    """Umgekehrt: die Legende darf nichts nennen, was es nicht gibt."""
+    known = set(taxonomy.sub_categories)
+    for key_category, subs in taxonomy.legend.items():
+        unknown = [s for s in subs if s not in known]
+        assert not unknown, f"{key_category} nennt unbekannte Werte: {unknown}"

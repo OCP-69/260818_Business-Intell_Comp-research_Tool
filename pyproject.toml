@@ -42,3 +42,6 @@ ignore = ["B008", "SIM105"]
 "scripts/*.py" = ["E402"]
 # Tests greifen absichtlich auf interne Helfer zu.
 "tests/*.py" = ["SLF001"]
+# Das Handbuch enthaelt Befehlszeilen, die der Leser kopieren soll. Sie
+# duerfen nicht umbrochen werden und sind teils laenger als 100 Zeichen.
+"docs/build_handbuch.py" = ["E501"]

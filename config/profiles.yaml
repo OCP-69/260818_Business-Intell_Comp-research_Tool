@@ -1,0 +1,148 @@
+# Rechercheprofile - fertige Laeufe, die man nur beim Namen ruft.
+#
+#   py -m cintel profiles                     zeigt alle Profile
+#   py -m cintel run --profile <name>         startet eines davon
+#
+# Ein Profil legt Suchfokus, Branche, Funktionsbereiche, Region und
+# Reifegrad fest. Was ein Profil NICHT setzt, bleibt auf dem Wert aus
+# config/targets.yaml.
+#
+# Weil ein Profillauf immer derselbe kurze Befehl ist, laesst er sich von
+# der Windows-Aufgabenplanung zeitgesteuert starten. Siehe Kapitel 11 des
+# Handbuchs und scripts/Register-CintelSchedule.ps1.
+#
+# ACHTUNG beim Bearbeiten: nur Leerzeichen zum Einruecken, niemals die
+# Tabulatortaste. Alle Kategorienamen muessen exakt so geschrieben sein
+# wie in config/taxonomy.yaml.
+
+profiles:
+
+  # --------------------------------------------------------------------
+  # 1) Der Einstieg: bekannte Firmen vervollstaendigen.
+  #    Keine Websuche, keine neuen Firmen - nur Luecken fuellen.
+  # --------------------------------------------------------------------
+  bestand-luecken:
+    description: >
+      Fuellt Luecken bei Firmen, die bereits in der Tabelle stehen.
+      Der richtige erste Lauf, weil man die Ergebnisse selbst beurteilen kann.
+    mode: gaps
+    limit: 25
+    target_columns:
+      - "Product_name"
+      - "All_Key_Categories of this company"
+      - "R-Strategies"
+      - "Remarks Product/solution"
+    tier_priority:
+      - "Tier 1 \u2013 Direkt"
+      - "Tier 2 \u2013 Nachbar"
+      - "Tier 3 \u2013 Beobachten"
+    require_url: true
+
+  # --------------------------------------------------------------------
+  # 2) Nur die direkten Wettbewerber, dafuer gruendlich.
+  # --------------------------------------------------------------------
+  tier1-tiefenpruefung:
+    description: >
+      Nur Tier-1-Wettbewerber, mehr Unterseiten je Firma und das staerkere
+      Modell. Langsamer, dafuer belastbarer.
+    mode: gaps
+    limit: 15
+    model: "opus"
+    max_pages_per_company: 20
+    target_columns:
+      - "Product_name"
+      - "Remarks Product/solution"
+      - "USP"
+      - "Pricing Model"
+    tier_priority:
+      - "Tier 1 \u2013 Direkt"
+    require_url: true
+
+  # --------------------------------------------------------------------
+  # 3) Neue Nachhaltigkeits-Startups im deutschsprachigen Raum.
+  # --------------------------------------------------------------------
+  lca-startups-dach:
+    description: >
+      Sucht neue Anbieter fuer Oekobilanzierung und CO2-Bewertung in
+      Deutschland, Oesterreich und der Schweiz, Reifegrad Seed bis Series B.
+    mode: new
+    limit: 15
+    key_categories:
+      - "5. Sustainability & Compliance (LCA/DPP)"
+    sub_categories:
+      - "LCA Software & Platforms"
+      - "Carbon & Eco-Design"
+      - "Circular Economy & R-Strategies"
+    regions:
+      - "DACH"
+    stages:
+      - "Seed"
+      - "Series A"
+      - "Series B"
+    inclusion_criteria: >
+      B2B-Software mit eigenem Produkt fuer Oekobilanz, Produkt-CO2-Fussabdruck
+      oder Kreislaufwirtschaft in der diskreten Fertigung.
+    exclusion_criteria: >
+      Reine Beratungshaeuser ohne Produkt. Reine ESG-Berichtssoftware ohne
+      Produktbezug. Konzerne mit mehr als 5000 Mitarbeitern.
+
+  # --------------------------------------------------------------------
+  # 4) KI-Assistenten im Engineering - europaweit.
+  # --------------------------------------------------------------------
+  engineering-ki-europa:
+    description: >
+      Sucht neue Anbieter von KI-Assistenten und Copiloten fuer
+      Konstruktion und Simulation in Europa.
+    mode: new
+    limit: 15
+    # Kategorie 1 muss mit dabei sein, weil "Generative & Computational
+    # Design" laut Legende dorthin gehoert. Ohne sie wuerde die Suche den
+    # Wert stillschweigend verwerfen.
+    key_categories:
+      - "6. Industrial AI & Future Engineering"
+      - "2. Simulation & Analysis (CAE)"
+      - "1. Design & Authoring (CAD/BIM)"
+    sub_categories:
+      - "Engineering Copilots & AI Assistants"
+      - "AI & Surrogate Simulation"
+      - "Generative & Computational Design"
+    regions:
+      - "Europe"
+    stages:
+      - "Seed"
+      - "Series A"
+      - "Series B"
+      - "Startup"
+    inclusion_criteria: >
+      Eigenes KI-Produkt fuer Konstruktion, Simulation oder Auslegung.
+    exclusion_criteria: >
+      Allgemeine KI-Plattformen ohne Engineering-Bezug. Reine Beratung.
+
+  # --------------------------------------------------------------------
+  # 5) Angebotsphase und Kalkulation - der LFL-Kernbereich.
+  # --------------------------------------------------------------------
+  angebotsphase-rfq:
+    description: >
+      Sucht Anbieter rund um Angebotserstellung, Anfragebearbeitung und
+      Kostenkalkulation - der unmittelbare Wettbewerbsbereich von LFL.
+    mode: new
+    limit: 12
+    key_categories:
+      - "7. Supply Chain & Operations"
+      - "8. Specialized & Cross-cutting"
+    sub_categories:
+      - "Supply Chain & RFQ & CPQ"
+      - "Cost Engineering & Value Analysis"
+    regions:
+      - "DACH"
+      - "Europe"
+    stages:
+      - "Seed"
+      - "Series A"
+      - "Series B"
+      - "Startup"
+    inclusion_criteria: >
+      Software fuer Angebotskalkulation, Anfragebearbeitung, Kostenschaetzung
+      oder Produktkonfiguration in der diskreten Fertigung.
+    exclusion_criteria: >
+      Allgemeine Einkaufsplattformen ohne Kalkulationsfunktion. Reine Beratung.

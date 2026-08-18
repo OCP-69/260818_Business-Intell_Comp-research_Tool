@@ -30,7 +30,7 @@ jobs:
           pip install ruff
 
       - name: Lint
-        run: ruff check cintel tests scripts
+        run: ruff check cintel tests scripts docs
 
       - name: Konfiguration validieren
         run: |

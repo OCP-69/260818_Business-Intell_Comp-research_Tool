@@ -110,6 +110,43 @@ py -m cintel run --master "<pfad.xlsx>" --mode new --limit 10
 Zielsektoren, Regionen und Reifegrade stehen in `config/targets.yaml`
 unter `new`.
 
+### Profile — vorkonfigurierte Läufe
+
+Statt langer Befehlszeilen bündelt ein Profil Suchfokus, Branche, Funktionsbereich,
+Region und Reifegrad unter einem Namen:
+
+```bash
+py -m cintel profiles
+```
+
+```bash
+py -m cintel run --master "<pfad.xlsx>" --profile lca-startups-dach
+```
+
+Mitgeliefert sind `bestand-luecken`, `tier1-tiefenpruefung`, `lca-startups-dach`,
+`engineering-ki-europa` und `angebotsphase-rfq` — definiert in
+`config/profiles.yaml`. Die Profilprüfung schlägt an, **bevor** ein Lauf startet:
+unbekannte Kategorien, fehlender Suchfokus und Sub-Kategorien, die nicht zur
+gewählten Hauptkategorie gehören.
+
+### Zeitgesteuerte Läufe
+
+Weil ein Profillauf immer derselbe kurze Befehl ist, kann die
+Windows-Aufgabenplanung ihn übernehmen:
+
+```powershell
+.\scripts\Register-CintelSchedule.ps1 -ProfileName bestand-luecken -Schedule Weekly -DayOfWeek Monday -Time 06:30
+```
+
+Der Runner `scripts/Run-CintelProfile.ps1` prüft vor dem Start, ob die
+Master-Tabelle erreichbar ist (Laufwerk H: ist Google Drive und kann getrennt
+sein) und ob die `claude`-CLI vorhanden ist, und protokolliert jeden Lauf nach
+`data/logs/`.
+
+> Die Aufgabe läuft unter dem angemeldeten Benutzerkonto, **nicht** als SYSTEM —
+> die OAuth-Anmeldung der `claude`-CLI hängt am Konto. Ein Lauf ohne angemeldeten
+> Benutzer schlägt fehl.
+
 ### Weitere Befehle
 
 ```bash
@@ -195,10 +232,19 @@ cintel/
 ├─ merge.py      Stufe 5
 ├─ validate.py   Qualitätsprüfung
 ├─ repair.py     Bestandsbereinigung
+├─ profiles.py   vorkonfigurierte Läufe
 └─ cli.py        Kommandozeile
 config/
 ├─ taxonomy.yaml  kontrolliertes Vokabular (aus v2.2 generiert)
-└─ targets.yaml   Zielsektoren und Limits
+├─ targets.yaml   Grundeinstellungen und Limits
+└─ profiles.yaml  benannte Rechercheprofile
+scripts/
+├─ Run-CintelProfile.ps1        Profillauf mit Protokoll
+├─ Register-CintelSchedule.ps1  Windows-Aufgabenplanung
+└─ inspect_master_db.py         Struktur und Füllgrade
+docs/
+├─ build_handbuch.py   Quelle des Handbuchs
+└─ cintel_Handbuch.pdf 28 Seiten, für Leser ohne Vorwissen
 ```
 
 ---
@@ -277,7 +323,7 @@ git rm --cached "pfad/zur/datei.xlsx"
 py -m pytest tests/ -q
 ```
 
-82 Tests, ohne Netz und ohne LLM-Aufrufe. Die Fixture `mini_master` baut eine
+112 Tests, ohne Netz und ohne LLM-Aufrufe. Die Fixture `mini_master` baut eine
 Master-DB nach, die die realen Mängel enthält — mehrzeilige Header,
 Float-IDs, Seitentitel im URL-Feld, Mojibake, formatierte Leerzeilen am Ende.
 
@@ -295,6 +341,8 @@ waren:
   muss über stdin gehen, nicht als Argument
 - Domains aus Partner-Links dürfen nicht auf die falsche Firma indiziert werden
   (Autodesk hatte eine `makersite.io`-Customer-Story)
+- Drei Sub-Kategorien waren keiner Hauptkategorie zugeordnet — die Discovery hätte
+  sie stillschweigend verworfen und über *alle* Kategorien gesucht
 
 ---
 

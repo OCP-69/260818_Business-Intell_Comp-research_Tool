@@ -26,6 +26,7 @@ from .extract import Extractor
 from .llm import LLMError, UsageLedger, claude_available, codex_available
 from .masterdb import MasterDB
 from .merge import MergePlan, Merger, write_run_artifacts
+from .profiles import ProfileError, load_profiles, resolve, validate_profile
 from .repair import run_repair
 from .schema import Taxonomy
 from .validate import validate_records
@@ -34,6 +35,7 @@ log = logging.getLogger("cintel")
 
 DEFAULT_TAXONOMY = "config/taxonomy.yaml"
 DEFAULT_TARGETS = "config/targets.yaml"
+DEFAULT_PROFILES = "config/profiles.yaml"
 DEFAULT_OUT = "data/outputs"
 DEFAULT_CACHE = "data/cache"
 
@@ -117,10 +119,73 @@ def cmd_repair(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_profiles(args: argparse.Namespace) -> int:
+    """Listet die vorkonfigurierten Rechercheprofile."""
+    taxonomy = Taxonomy.load(args.taxonomy)
+    try:
+        profiles = load_profiles(args.profiles)
+    except ProfileError as exc:
+        print(f"Fehler in {args.profiles}: {exc}", file=sys.stderr)
+        return 1
+
+    if not profiles:
+        print(f"Keine Profile gefunden. Erwartet wird die Datei {args.profiles}.")
+        return 0
+
+    print("=" * 72)
+    print("  VERFUEGBARE RECHERCHEPROFILE")
+    print("=" * 72)
+    faulty = 0
+    for name, profile in sorted(profiles.items()):
+        problems = validate_profile(profile, taxonomy)
+        mark = "  " if not problems else "! "
+        print(f"\n{mark}{name}")
+        print(f"    {profile.summary}")
+        if profile.description:
+            for line in _wrap(profile.description, 66):
+                print(f"    {line}")
+        for problem in problems:
+            faulty += 1
+            print(f"    FEHLER: {problem}")
+    print("\n" + "=" * 72)
+    print(f"  {len(profiles)} Profile, {faulty} Beanstandungen")
+    print("  Starten mit:  py -m cintel run --profile <name> --master \"<datei>\"")
+    return 1 if faulty else 0
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    words, lines, current = str(text).split(), [], ""
+    for word in words:
+        if len(current) + len(word) + 1 > width:
+            lines.append(current)
+            current = word
+        else:
+            current = f"{current} {word}".strip()
+    if current:
+        lines.append(current)
+    return lines
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Der vollstaendige Durchlauf."""
     config = yaml.safe_load(Path(args.targets).read_text(encoding="utf-8"))
     taxonomy = Taxonomy.load(args.taxonomy)
+
+    # Ein Profil legt Suchfokus, Branche und Region fest und ueberschreibt
+    # dafuer Teile von targets.yaml.
+    if getattr(args, "profile", None):
+        try:
+            profiles = load_profiles(args.profiles)
+            config, profile = resolve(config, profiles, args.profile, taxonomy)
+        except ProfileError as exc:
+            print(f"Fehler: {exc}", file=sys.stderr)
+            return 2
+        print(f"Profil '{profile.name}': {profile.summary}")
+        if profile.version and not args.version:
+            args.version = profile.version
+        if profile.cross_check and args.cross_check == "none":
+            args.cross_check = profile.cross_check
+
     limits = config.get("limits", {}) or {}
     llm_config = config.get("llm", {}) or {}
     mode = args.mode or config.get("mode", "gaps")
@@ -340,9 +405,16 @@ def build_parser() -> argparse.ArgumentParser:
     repair.add_argument("--dry-run", action="store_true")
     repair.set_defaults(func=cmd_repair)
 
+    profiles_cmd = sub.add_parser("profiles", help="Rechercheprofile auflisten")
+    profiles_cmd.add_argument("--profiles", default=DEFAULT_PROFILES)
+    profiles_cmd.set_defaults(func=cmd_profiles)
+
     run = sub.add_parser("run", help="Vollstaendiger Recherchelauf")
     run.add_argument("--master", required=True)
     run.add_argument("--targets", default=DEFAULT_TARGETS)
+    run.add_argument("--profiles", default=DEFAULT_PROFILES)
+    run.add_argument("--profile", default=None,
+                     help="Vorkonfiguriertes Profil aus config/profiles.yaml")
     run.add_argument("--out-dir", default=DEFAULT_OUT)
     run.add_argument("--cache-dir", default=DEFAULT_CACHE)
     run.add_argument("--mode", choices=["gaps", "new"], default=None)
