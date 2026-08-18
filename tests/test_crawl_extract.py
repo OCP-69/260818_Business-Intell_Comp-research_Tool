@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from cintel.crawl import Crawler, Page, _name_core, _name_matches
+from cintel.crawl import Crawler, Page, _name_core, _name_matches, _name_variants
 from cintel.extract import _clean, build_schema
 from cintel.masterdb import MasterDB
 from cintel.merge import MergePlan, Merger
@@ -172,3 +172,30 @@ def test_add_new_company_assigns_sequential_ids(mini_master):
     assert {r.values["company_id"] for r in first} == {4}
     assert {r.values["company_id"] for r in second} == {5}
     assert all(r.values["last_update"] for r in first)
+
+
+def test_name_variants_splits_parenthetical():
+    """
+    Regression: "CAESES (Friendship Systems)" wurde faelschlich abgelehnt.
+
+    `_name_core` entfernt Allerweltswoerter wie "Systems" - im Crawl-Gate
+    ist dieser groszuegige Abgleich gewollt, weil zusaetzlich mindestens
+    eine Variante wirklich auf der Seite stehen muss.
+    """
+    variants = _name_variants("CAESES (Friendship Systems)")
+    assert "caeses" in variants
+    assert "friendship" in variants
+    assert variants[0] == "caesesfriendship", "Vollname bleibt erste Variante"
+
+
+def test_name_matches_accepts_partial_company_name():
+    page = Page(url="https://www.caeses.com", status=200,
+                title="CAESES | CAD for Applications", text="CAESES software")
+    assert _name_matches("CAESES (Friendship Systems)", page)
+
+
+def test_name_matches_still_rejects_unrelated_site():
+    """Die Zerlegung darf das Gate nicht aufweichen."""
+    page = Page(url="https://www.caeses.com", status=200,
+                title="CAESES | CAD", text="CAESES software")
+    assert not _name_matches("Siemens Digital Industries", page)

@@ -32,6 +32,8 @@ SHEET_MASTER = "Competitors_All-Master"
 SHEET_LEGEND = "Legend_Categories"
 
 VERSION_RE = re.compile(r"_v(\d+)\.(\d+)\.xlsx$", re.IGNORECASE)
+# Toleranter: faengt auch "_v2.2r", "_v1.7_short" o.ae. als Versionssuffix.
+ANY_VERSION_RE = re.compile(r"_v\d+(?:\.\d+)?[A-Za-z0-9_-]*\.xlsx$", re.IGNORECASE)
 
 
 @dataclass
@@ -297,11 +299,19 @@ def _block_key(record: Record) -> str:
 
 
 def _bump_filename(name: str, version: str | None) -> str:
-    """Competitive_Intel_Master_DB_v2.2.xlsx -> ..._v2.3.xlsx"""
+    """
+    Competitive_Intel_Master_DB_v2.2.xlsx -> ..._v2.3.xlsx
+
+    Bei explizit gesetzter Version wird ein vorhandenes Versionssuffix
+    ERSETZT, nicht angehaengt - auch wenn es nicht dem Zahlenschema folgt.
+    Sonst entsteht aus "..._v2.2r.xlsx" + version="2.3" der Doppelname
+    "..._v2.2r_v2.3.xlsx".
+    """
     match = VERSION_RE.search(name)
     if version:
-        if match:
-            return name[: match.start()] + f"_v{version}.xlsx"
+        loose = ANY_VERSION_RE.search(name)
+        if loose:
+            return name[: loose.start()] + f"_v{version}.xlsx"
         return name.replace(".xlsx", f"_v{version}.xlsx")
     if match:
         major, minor = int(match.group(1)), int(match.group(2))
