@@ -1,0 +1,32 @@
+# Daten und Ausgaben - gehoeren NICHT ins Repository.
+# Die Master-DB enthaelt Wettbewerbsdaten; Laufergebnisse werden lokal
+# erzeugt und bewusst nicht versioniert.
+data/
+!data/.gitkeep
+*.xlsx
+*.xlsm
+~$*
+
+# Secrets
+.env
+.env.local
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
