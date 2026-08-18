@@ -1,0 +1,12 @@
+# Zeilenenden im Repository immer LF, in der Windows-Arbeitskopie CRLF.
+* text=auto eol=lf
+
+# Binaerdateien NIEMALS umschreiben - eine CRLF-Konvertierung wuerde sie
+# unbrauchbar machen.
+*.pdf   binary
+*.xlsx  binary
+*.xlsm  binary
+*.png   binary
+*.jpg   binary
+*.zip   binary
+*.docx  binary
