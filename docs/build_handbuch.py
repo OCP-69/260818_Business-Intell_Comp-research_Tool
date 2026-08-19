@@ -905,7 +905,9 @@ Lauf-Ordner  : data\\outputs\\run_20260818_230425""")]
          "Beim Start <font face='Courier'>--cross-check codex</font> anhaengen. "
          "Gruendungsjahr, Mitarbeiterzahl und Standort werden dann unabhaengig "
          "nachgeprueft und Abweichungen gemeldet. Setzt voraus, dass "
-         "<font face='Courier'>codex login</font> einmal ausgefuehrt wurde"],
+         "<font face='Courier'>codex login</font> einmal ausgefuehrt wurde. "
+         "Verdoppelt etwa die Laufzeit und schlaegt gelegentlich fehl - das "
+         "wird gemeldet und beeintraechtigt den Lauf nicht"],
         ["Gruendungsjahr und Mitarbeiterzahl bleiben leer",
          "Diese Angaben stehen auf der Ueber-uns-Seite. Das Tool ruft sie "
          "bevorzugt ab, aber nicht jede Firma veroeffentlicht sie. "

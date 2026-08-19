@@ -122,3 +122,89 @@ def test_missing_cli_gives_actionable_message(monkeypatch):
     monkeypatch.setattr(llm.shutil, "which", lambda name: None)
     with pytest.raises(llm.LLMError, match="claude"):
         llm.call_claude("hallo", SCHEMA, tools="")
+
+
+# ------------------------------------------------------------------- codex
+
+class FakeCodexRun:
+    """
+    Simuliert codex: schreibt die Ausgabedatei erst ab einem bestimmten
+    Versuch. Davor meldet es einen voruebergehenden Fehler.
+    """
+
+    def __init__(self, succeed_on: int, stderr: str = "") -> None:
+        self.succeed_on = succeed_on
+        self.stderr = stderr
+        self.calls = 0
+
+    def __call__(self, cmd, **kwargs):
+        self.calls += 1
+        if self.calls >= self.succeed_on:
+            out = cmd[cmd.index("-o") + 1]
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write('{"ok": true}')
+            return FakeProc("", 0)
+        proc = FakeProc("", 1)
+        proc.stderr = self.stderr
+        return proc
+
+
+TRANSIENT = ("ERROR codex_models_manager::manager: failed to refresh "
+             "available models: stream disconnected before completion")
+
+
+def test_codex_retries_transient_failures(monkeypatch):
+    """
+    Beobachtet: derselbe Aufruf scheitert einmal nach 73 Sekunden mit
+    "failed to refresh available models" und laeuft beim naechsten Mal in
+    6 Sekunden durch. Ueber 8 Laeufe waren es 7 Erfolge - aber nur MIT
+    Wiederholung.
+    """
+    fake = FakeCodexRun(succeed_on=3, stderr=TRANSIENT)
+    monkeypatch.setattr(llm.subprocess, "run", fake)
+    monkeypatch.setattr(llm.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+
+    result = llm.call_codex("hallo", SCHEMA, max_retries=2)
+    assert result.data == {"ok": True}
+    assert fake.calls == 3
+
+
+def test_codex_gives_up_after_max_retries(monkeypatch):
+    fake = FakeCodexRun(succeed_on=99, stderr=TRANSIENT)
+    monkeypatch.setattr(llm.subprocess, "run", fake)
+    monkeypatch.setattr(llm.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+
+    with pytest.raises(llm.LLMError, match="ohne Ergebnis"):
+        llm.call_codex("hallo", SCHEMA, max_retries=2)
+    assert fake.calls == 3
+
+
+def test_codex_does_not_retry_missing_login(monkeypatch):
+    """Eine fehlende Anmeldung ist durch Wiederholen nicht zu beheben."""
+    fake = FakeCodexRun(succeed_on=99, stderr="error: invalid_refresh_token")
+    monkeypatch.setattr(llm.subprocess, "run", fake)
+    monkeypatch.setattr(llm.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+
+    with pytest.raises(llm.LLMError, match="codex login"):
+        llm.call_codex("hallo", SCHEMA, max_retries=2)
+    assert fake.calls == 1, "kein Wiederholen bei fehlender Anmeldung"
+
+
+def test_codex_uses_resolved_path(monkeypatch):
+    """Windows: der blosse Name 'codex' scheitert, .CMD braucht den Pfad."""
+    fake = FakeCodexRun(succeed_on=1)
+    monkeypatch.setattr(llm.subprocess, "run", fake)
+    monkeypatch.setattr(llm.shutil, "which",
+                        lambda n: rf"C:\Users\x\AppData\Roaming\npm\{n}.CMD")
+    captured_cmd = {}
+
+    def spy(cmd, **kwargs):
+        captured_cmd["cmd"] = cmd
+        return fake(cmd, **kwargs)
+
+    monkeypatch.setattr(llm.subprocess, "run", spy)
+    llm.call_codex("hallo", SCHEMA)
+    assert captured_cmd["cmd"][0].endswith("codex.CMD")

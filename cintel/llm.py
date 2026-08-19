@@ -281,12 +281,33 @@ def codex_available() -> bool:
     return _resolve("codex") is not None
 
 
+# Meldungen, die auf eine voruebergehende Stoerung beim codex-Start
+# hindeuten. Beobachtet: derselbe Aufruf scheitert einmal nach 73 Sekunden
+# mit "failed to refresh available models" und laeuft beim naechsten Mal in
+# 6 Sekunden durch. Die Prompt-Groesse spielt dabei keine Rolle - 30.000
+# Zeichen gingen durch, 568 nicht.
+CODEX_TRANSIENT_MARKERS = (
+    "failed to refresh available models",
+    "stream disconnected",
+    "timeout waiting for child process",
+    "connection reset",
+    "temporarily unavailable",
+    "502", "503", "504",
+)
+
+CODEX_AUTH_MARKERS = (
+    "invalid_refresh_token", "unauthorized", "not logged in",
+    "please login", "401",
+)
+
+
 def call_codex(
     prompt: str,
     schema: dict[str, Any],
     *,
     model: str | None = None,
     timeout: int = 600,
+    max_retries: int = 2,
 ) -> LLMResult:
     """
     Unabhaengige Zweitextraktion ueber `codex exec`.
@@ -319,38 +340,56 @@ def call_codex(
         if model:
             cmd += ["--model", model]
 
-        try:
-            proc = subprocess.run(
-                cmd, input=prompt, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=timeout, cwd=tmp,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise LLMError(f"codex-CLI Timeout nach {timeout}s") from exc
-        except OSError as exc:
-            # z.B. WinError 2, wenn der Wrapper nicht startbar ist. Der
-            # Cross-Check ist eine Zusatzpruefung - er darf den Lauf nicht
-            # abbrechen.
-            raise LLMError(f"codex-CLI nicht ausfuehrbar: {exc}") from exc
+        raw = ""
+        last_detail = ""
+        for attempt in range(1, max_retries + 2):
+            if out_path.exists():
+                out_path.unlink()
+            try:
+                proc = subprocess.run(
+                    cmd, input=prompt, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=timeout, cwd=tmp,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise LLMError(f"codex-CLI Timeout nach {timeout}s") from exc
+            except OSError as exc:
+                # z.B. WinError 2, wenn der Wrapper nicht startbar ist. Der
+                # Cross-Check ist eine Zusatzpruefung - er darf den Lauf
+                # nicht abbrechen.
+                raise LLMError(f"codex-CLI nicht ausfuehrbar: {exc}") from exc
 
-        if not out_path.exists():
+            if out_path.exists():
+                raw = out_path.read_text(encoding="utf-8", errors="replace")
+                break
+
             combined = f"{proc.stderr} {proc.stdout}".lower()
-            # Fehlende Anmeldung ist der haeufigste Fall und durch
-            # Wiederholen nicht zu beheben - dann lieber klar ansagen, was
-            # zu tun ist, statt den rohen API-Fehler auszugeben.
-            if any(marker in combined for marker in
-                   ("invalid_refresh_token", "unauthorized", "not logged in",
-                    "please login", "401")):
+
+            # Fehlende Anmeldung ist durch Wiederholen nicht zu beheben -
+            # dann sofort abbrechen und klar ansagen, was zu tun ist.
+            if any(m in combined for m in CODEX_AUTH_MARKERS):
                 raise LLMError(
                     "codex ist nicht angemeldet (ChatGPT Pro). Einmalig "
                     "`codex login` ausfuehren. Der Cross-Check ist optional - "
                     "der Lauf funktioniert auch ohne ihn."
                 )
-            detail = " ".join(proc.stderr.split())[:200]
+
+            last_detail = " ".join(proc.stderr.split())[:200]
+            if any(m in combined for m in CODEX_TRANSIENT_MARKERS):
+                log.warning("codex Versuch %d gescheitert (voruebergehend): %s",
+                            attempt, last_detail[:120])
+                time.sleep(2 * attempt)
+                continue
+
             raise LLMError(
                 f"codex lieferte keine Ausgabedatei (Exit {proc.returncode}): "
-                f"{detail}"
+                f"{last_detail}"
             )
-        raw = out_path.read_text(encoding="utf-8", errors="replace")
+
+        if not raw:
+            raise LLMError(
+                f"codex nach {max_retries + 1} Versuchen ohne Ergebnis. "
+                f"Letzte Meldung: {last_detail}"
+            )
 
     data = _salvage_json(raw)
     if data is None:
