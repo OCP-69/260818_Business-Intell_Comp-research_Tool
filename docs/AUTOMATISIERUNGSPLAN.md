@@ -482,6 +482,12 @@ jede Automatik wertvoll.
 
 ## 9a. Gemini als Prüfer statt Codex?
 
+### Ergebnis vorweg
+
+**Gemini ist unter der gesetzten Bedingung — keine zusätzlich zu kaufenden
+API-Schlüssel — keine Alternative zu Codex.** Der abo-gestützte Headless-Weg
+ist von Google eingestellt worden. Belegt, nicht vermutet; siehe unten.
+
 ### Befund zur Verfügbarkeit (19.08.2026, geprüft)
 
 | Prüfung | Ergebnis |
@@ -493,19 +499,53 @@ jede Automatik wertvoll.
 | `~/.gemini` | vorhanden — stammt aber von **Antigravity IDE**, nicht von der CLI |
 | Antigravity headless nutzbar | **nein** — nur `antigravity-ide.cmd`, ein GUI-Starter |
 
-**Gemini ist derzeit nicht programmatisch erreichbar.** Ein Vergleich zweier
-Prüfer ist heute nicht durchführbar. Nötig wären zwei Schritte, davon einer
-nur durch den Nutzer selbst:
+### Was der Versuch ergab (durchgeführt, nicht geschätzt)
 
-1. `npm install -g @google/gemini-cli` — Systemänderung, braucht Freigabe
-2. Anmeldung mit dem Google-Konto — **kann nur der Nutzer**
+CLI installiert (`@google/gemini-cli` 0.55.1), Anmeldung mit dem Google-Konto
+vom Nutzer durchgeführt. Die Bestätigungsseite listete „Gemini CLI"
+ausdrücklich als freigegebenes Produkt, und die Anmeldedaten wurden lokal
+abgelegt (`~/.gemini/oauth_creds.json`, `selectedType: oauth-personal`).
 
-Zu klären ist dabei eine Annahme, die ich **nicht** bestätigen kann: ob das
-bezahlte Gemini-Abo dieselbe Headless-Nutzung freischaltet, wie ChatGPT Pro es
-für Codex tut. Bei Codex ist das belegt (`auth_mode: chatgpt`, kein API-Key).
-Für Gemini ist es zu prüfen — die CLI kennt sowohl Konto-Anmeldung als auch
-einen separaten API-Schlüssel, und ob das Abo dabei über das kostenlose
-Kontingent hinaushilft, zeigt erst der Versuch.
+Beim ersten Aufruf dann:
+
+```
+IneligibleTierError: This client is no longer supported for Gemini Code
+Assist for individuals. To continue using Gemini, please migrate to the
+Antigravity suite of products.
+    tierId:   free-tier
+    tierName: Gemini Code Assist for individuals
+```
+
+**Die Anmeldung gelingt, die Berechtigung fehlt.** Google hat den
+CLI-Zugang für Einzelnutzer eingestellt und verweist auf Antigravity.
+
+Der genannte Ausweg trägt nicht: `antigravity-ide.exe` ist ein
+VS-Code-Abkömmling mit den Optionen `--diff`, `--merge`, `--goto`,
+`--new-window`. Ein **grafischer Editor ohne Headless-Modus** — als Prüfer in
+einer automatisierten Schleife nicht verwendbar.
+
+### Verbleibende Wege zu Gemini — und warum sie die Bedingung verletzen
+
+| Weg | Bewertung |
+|---|---|
+| Konto-Anmeldung (Abo) | **versperrt** — Tier eingestellt |
+| `GEMINI_API_KEY` aus AI Studio | technisch möglich, aber ein **separater, verbrauchsabhängiger Schlüssel**. Der kostenlose Tarif nutzt Eingaben nach Googles Bedingungen zur Produktverbesserung — bei Wettbewerbsdaten zu bedenken |
+| Vertex AI über GCP | möglich, erfordert Projekt, Abrechnung und `gcloud`. Deutlich mehr Aufbau |
+| Antigravity | **nur GUI**, kein Headless-Betrieb |
+
+Der ausdrückliche Wunsch lautete: keine zusätzlich zu kaufenden API-Schlüssel.
+Alle verbleibenden Gemini-Wege verletzen genau das. Bei Codex ist die
+Abo-Nutzung dagegen belegt (`auth_mode: chatgpt`, `OPENAI_API_KEY: None`).
+
+### Messvergleich
+
+Nicht durchführbar — Gemini lieferte keinen einzigen Lauf. Der Bench ist
+vorbereitet und läuft sofort, falls sich die Lage ändert oder ein
+API-Schlüssel gewünscht wird:
+
+```
+py scripts/reviewbench/run_review.py gemini
+```
 
 ### Das Google-Drive-Argument trägt nicht
 
@@ -538,13 +578,36 @@ lokal, und nur das Endergebnis nach `H:\` — genau wie beim Recherchelauf.
 
 ### Empfehlung
 
-**Nicht austauschen — allenfalls ergänzen, und erst nach Messung.**
+**Bei Codex bleiben.** Nicht aus Vorliebe, sondern weil Gemini unter der
+gesetzten Bedingung schlicht nicht zur Verfügung steht — und weil Codex den
+Nachweis erbracht hat.
 
-Codex hat den Nachweis erbracht, Gemini steht dieser Nachweis noch aus. Ein
-Wechsel auf Verdacht tauscht Belegtes gegen Unbelegtes.
+### Codex-Basiswerte (Reviewbench, 19.08.2026)
 
-Der Versuchsaufbau aus Abschnitt 1a ist wiederverwendbar und liefert die
-Entscheidung auf Messbasis. Als Prüfmaß schlage ich vor:
+Drei Fälle aus der echten Fehlerhistorie, je zwei Varianten:
+
+| Maß | Ergebnis |
+|---|---|
+| Läufe erfolgreich | **6/6** |
+| Treffer ohne Symptom (A) | **2/3** — verfehlt: `02_cell_none` |
+| Treffer mit Symptom (B) | **3/3** |
+| Schema eingehalten | **6/6** |
+| Antwortzeit Median | **31,1 s** |
+
+Alle Treffer wurden als *blockierend* eingestuft, also richtig gewichtet.
+
+**Korrektur zu Abschnitt 1a:** Fall 01 wird mit dem vollständigen Code auch
+**ohne** Symptom getroffen. Der Fehlschlag im Vorversuch lag am gekürzten
+Auszug — ebenso die zwei Scheinbefunde. Die dort gezogene Schlussfolgerung
+(„Prüfer taugt vor allem als Diagnostiker") ist damit zu entschärfen: Er
+taugt auch als Vorprüfer, sofern er die **ganze Datei** sieht. Als
+Diagnostiker bleibt er stärker (3/3 gegen 2/3), aber der Unterschied ist
+kleiner als zunächst gemessen.
+
+### Wenn Gemini später doch geprüft werden soll
+
+Der Versuchsaufbau ist wiederverwendbar und liefert die Entscheidung auf
+Messbasis. Prüfmaße:
 
 | Maß | Erhebung |
 |---|---|
