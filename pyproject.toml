@@ -1,12 +1,10 @@
 [project]
 name = "cintel"
-version = "0.1.0"
-description = "Competitive Intelligence Retrieval fuer die LoopForgeLab Master DB"
+version = "3.0.0"
+description = "Deterministischer Kern der LoopForgeLab Competitive Intel Master DB"
 requires-python = ">=3.11"
 dependencies = [
     "openpyxl>=3.1.0",
-    "requests>=2.31.0",
-    "beautifulsoup4>=4.12.0",
     "PyYAML>=6.0",
 ]
 
@@ -42,6 +40,5 @@ ignore = ["B008", "SIM105"]
 "scripts/*.py" = ["E402"]
 # Tests greifen absichtlich auf interne Helfer zu.
 "tests/*.py" = ["SLF001"]
-# Das Handbuch enthaelt Befehlszeilen, die der Leser kopieren soll. Sie
-# duerfen nicht umbrochen werden und sind teils laenger als 100 Zeichen.
-"docs/build_handbuch.py" = ["E501"]
+# Die UI baut ihr HTML/CSS inline auf - Stilregeln duerfen laenger sein.
+"app/app.py" = ["E402", "E501"]
