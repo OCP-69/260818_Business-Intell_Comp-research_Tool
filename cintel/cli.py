@@ -1,462 +1,372 @@
 """
-Kommandozeile.
+cintel v3 - deterministischer Kern fuer die Competitive Intel Master DB.
 
-    py -m cintel doctor
-    py -m cintel validate --master <pfad.xlsx>
-    py -m cintel repair   --master <pfad.xlsx>
-    py -m cintel run      --master <pfad.xlsx> --targets config/targets.yaml
+Die Recherche (Discovery, Quellenlektuere, Extraktion, Bewertung) macht ein
+Claude-Code-Agent (siehe prompts/wettbewerbsanalyse-agent_v1.1.md). Dieses
+Paket ist die einzige Schreibschnittstelle zur Master-DB:
+
+    py -m cintel ingest records.json --db <master.xlsx>   Recherche einspielen
+    py -m cintel validate --db <master.xlsx>              Bestand pruefen
+    py -m cintel stats --db <master.xlsx>                 Fuellgrade/Kennzahlen
+    py -m cintel doctor                                   Umgebung pruefen
+
+`ingest` erwartet das in docs/RECORDS_FORMAT.md beschriebene JSON: je Firma
+ein Objekt mit `company_row` (eine Zeile "Company information") und
+`products` (je Produkt eine Zeile "Product"). Es gilt fill-only: bestehende,
+kuratierte Werte werden NIE ueberschrieben.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import logging
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from .crawl import Crawler
 from .dedupe import Deduper, first_url
-from .discover import discover_new, select_gap_companies
-from .extract import Extractor
-from .llm import LLMError, UsageLedger, claude_available, codex_available
-from .masterdb import MasterDB
+from .masterdb import MasterDB, today_stamp
 from .merge import MergePlan, Merger, write_run_artifacts
-from .profiles import ProfileError, load_profiles, resolve, validate_profile
-from .repair import run_repair
-from .schema import Taxonomy
+from .schema import (
+    FIELD_NAMES,
+    ROW_KIND_COMPANY,
+    ROW_KIND_PRODUCT,
+    Record,
+    Taxonomy,
+    join_multi,
+    split_multi,
+)
 from .validate import validate_records
 
 log = logging.getLogger("cintel")
 
-DEFAULT_TAXONOMY = "config/taxonomy.yaml"
-DEFAULT_TARGETS = "config/targets.yaml"
-DEFAULT_PROFILES = "config/profiles.yaml"
-DEFAULT_OUT = "data/outputs"
-DEFAULT_CACHE = "data/cache"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TAXONOMY = REPO_ROOT / "config" / "taxonomy.yaml"
+DEFAULT_OUT_DIR = REPO_ROOT / "data" / "outputs"
+
+# Felder, deren Werte gegen die Taxonomie kanonisiert werden.
+VOCAB_FIELDS = ("key_categories", "sub_category", "competitor_tier", "beachhead")
 
 
 # --------------------------------------------------------------------------
+# records.json -> Records
+# --------------------------------------------------------------------------
 
-def cmd_doctor(args: argparse.Namespace) -> int:
-    """Prueft die Betriebsvoraussetzungen."""
-    print("=" * 62)
-    print("CINTEL DOCTOR")
-    print("=" * 62)
-    ok = True
+class IngestError(RuntimeError):
+    """records.json verletzt den Vertrag."""
 
-    if claude_available():
-        print(f"  [ok]   claude-CLI gefunden: {shutil.which('claude')}")
-    else:
-        print("  [FEHL] claude-CLI nicht gefunden - ohne sie laeuft keine Extraktion.")
-        ok = False
 
-    if codex_available():
-        print("  [ok]   codex-CLI gefunden (Cross-Check moeglich)")
-    else:
-        print("  [--]   codex-CLI nicht gefunden (Cross-Check deaktiviert)")
+def _clean_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        # Die N/A-Politik von v3: Unbekanntes bleibt LEER. Der alte
+        # Platzhalter hat in v2.x die Fuellgrade um 30-70 Punkte geschoent.
+        if not text or text.lower().startswith("n/a"):
+            return None
+        return text
+    return value
 
-    for label, path in (("Taxonomie", args.taxonomy), ("Ziele", args.targets)):
-        exists = Path(path).exists()
-        print(f"  {'[ok]  ' if exists else '[FEHL]'} {label}: {path}")
-        ok = ok and exists
 
-    if args.master:
-        try:
-            db = MasterDB(args.master)
-            print(f"  [ok]   Master-DB: {len(db)} Zeilen, "
-                  f"{len(db.blocks())} Firmen, naechste ID {db.next_company_id()}")
-        except Exception as exc:
-            print(f"  [FEHL] Master-DB: {exc}")
-            ok = False
-    else:
-        print("  [--]   Master-DB: nicht angegeben (--master)")
+def _canonize(field: str, value: Any, taxonomy: Taxonomy, notes: list[str],
+              company: str) -> Any:
+    """Kanonisiert Vokabular-Felder; nicht aufloesbare Werte werden verworfen."""
+    if value in (None, ""):
+        return None
+    if field == "competitor_tier":
+        canonical = taxonomy.canon_tier(value)
+        if canonical is None:
+            notes.append(f"{company}: Tier {value!r} unbekannt - verworfen")
+        return canonical
+    if field == "beachhead":
+        parts = [p for v in split_multi(value) for p in str(v).split(",")]
+        kept = [taxonomy.canon_beachhead(p.strip()) for p in parts if p.strip()]
+        kept = [k for k in kept if k]
+        if not kept:
+            notes.append(f"{company}: Beachhead {value!r} unbekannt - verworfen")
+            return None
+        return join_multi("beachhead", kept)
+    canon = (taxonomy.canon_key_category if field == "key_categories"
+             else taxonomy.canon_sub_category)
+    kept = []
+    for part in split_multi(value):
+        resolved = canon(part)
+        if resolved:
+            kept.append(resolved)
+        else:
+            notes.append(f"{company}: {field} {part!r} unbekannt - verworfen")
+    return join_multi(field, kept) if kept else None
 
-    print("=" * 62)
-    print("  Bereit." if ok else "  Es fehlen Voraussetzungen (siehe oben).")
-    return 0 if ok else 1
+
+def _build_record(payload: dict, *, company: str, kind: str,
+                  confidence: float, source: str, taxonomy: Taxonomy,
+                  notes: list[str]) -> Record:
+    values: dict[str, Any] = {}
+    for name, raw in payload.items():
+        if name not in FIELD_NAMES:
+            notes.append(f"{company}: unbekanntes Feld {name!r} ignoriert")
+            continue
+        value = _clean_value(raw)
+        if name in VOCAB_FIELDS:
+            value = _canonize(name, value, taxonomy, notes, company)
+        if value is not None:
+            values[name] = value
+    values["company"] = company
+    values["row_kind"] = kind
+    values.setdefault("last_update", today_stamp())
+    if kind == ROW_KIND_COMPANY:
+        values.pop("product_name", None)
+    record = Record(values=values)
+    record.confidence["*"] = confidence
+    if source:
+        record.sources["*"] = source
+    return record
+
+
+def load_records_json(path: Path, taxonomy: Taxonomy) -> tuple[list[dict], list[str]]:
+    """
+    Liest records.json und liefert je Firma:
+        {"company": str, "records": [Record, ...], "sources": [...],
+         "confidence": float}
+    plus eine Liste von Kanonisierungs-Notizen fuer den Report.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise IngestError(f"records.json ist kein gueltiges JSON: {exc}") from exc
+
+    companies = data.get("companies")
+    if not isinstance(companies, list) or not companies:
+        raise IngestError("records.json: 'companies' fehlt oder ist leer.")
+
+    notes: list[str] = []
+    out: list[dict] = []
+    for entry in companies:
+        company = str(entry.get("company") or "").strip()
+        if not company:
+            raise IngestError("Firma ohne 'company'-Namen in records.json.")
+        confidence = float(entry.get("confidence", 0.0))
+        sources = [s for s in (entry.get("sources") or []) if s]
+        primary_source = sources[0] if sources else ""
+
+        records = [_build_record(
+            entry.get("company_row") or {}, company=company,
+            kind=ROW_KIND_COMPANY, confidence=confidence,
+            source=primary_source, taxonomy=taxonomy, notes=notes,
+        )]
+        for product in entry.get("products") or []:
+            name = str(product.get("product_name") or "").strip()
+            if not name:
+                notes.append(f"{company}: Produkt ohne product_name uebersprungen")
+                continue
+            records.append(_build_record(
+                product, company=company, kind=ROW_KIND_PRODUCT,
+                confidence=float(product.get("confidence", confidence)),
+                source=primary_source, taxonomy=taxonomy, notes=notes,
+            ))
+        out.append({"company": company, "records": records,
+                    "sources": sources, "confidence": confidence})
+    return out, notes
+
+
+# --------------------------------------------------------------------------
+# Subcommands
+# --------------------------------------------------------------------------
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    taxonomy = Taxonomy.load(args.taxonomy)
+    db = MasterDB(args.db)
+    companies, notes = load_records_json(Path(args.records), taxonomy)
+
+    # Neue Zeilen strikt validieren, BEVOR irgendetwas geschrieben wird.
+    all_new = [r for c in companies for r in c["records"]]
+    report = validate_records(all_new, taxonomy, strict=True)
+    if report.errors:
+        print(report.render())
+        print("\nABBRUCH: records.json enthaelt Fehler - nichts geschrieben.")
+        return 2
+
+    deduper = Deduper([(name, url) for name, url in db.iter_urls()]
+                      + [(n, "") for n in db.company_names()])
+    blocks_by_name = {b.company.strip().lower(): b for b in db.blocks() if b.company}
+
+    merger = Merger(db, min_confidence=args.min_confidence)
+    plan = MergePlan()
+    sources_rows: list[dict[str, Any]] = []
+    new_companies: list[str] = []
+    enriched: list[str] = []
+
+    for entry in companies:
+        company = entry["company"]
+        url = ""
+        for record in entry["records"]:
+            url = first_url(str(record.values.get("url") or "")) or url
+        match = deduper.check(company, url)
+        for source in entry["sources"]:
+            sources_rows.append({"company": company, "source": source,
+                                 "confidence": entry["confidence"],
+                                 "date": today_stamp()})
+        if match.is_duplicate:
+            block = blocks_by_name.get(match.matched_company.strip().lower())
+            if block is None:
+                plan.skipped.append((company, "Dublette ohne aufloesbaren Block"))
+                continue
+            merger.enrich_existing(block, entry["records"], plan)
+            enriched.append(f"{company} -> {match.matched_company} ({match.reason})")
+        else:
+            if entry["confidence"] < args.min_confidence:
+                plan.skipped.append(
+                    (company, f"Confidence {entry['confidence']:.2f} unter Schwelle"))
+                continue
+            plan.new_rows.extend(merger.add_new_company(entry["records"]))
+            new_companies.append(company)
+
+    print(f"Plan: {plan.summary()}")
+    if notes:
+        print(f"  {len(notes)} Kanonisierungs-Hinweise (Details im Report)")
+    if not plan.new_rows and not plan.updates:
+        print("Nichts zu tun - keine neuen Zeilen, keine Ergaenzungen.")
+        return 0
+    if args.dry_run:
+        for line in enriched:
+            print("  ergaenzt:", line)
+        for name in new_companies:
+            print("  neu:     ", name)
+        print("Dry-Run: nichts geschrieben.")
+        return 0
+
+    before = len(db.records)
+    target = merger.apply(plan, args.out_dir, version=args.version)
+
+    # Plausibilitaets-Gate: Zeilenbilanz der geschriebenen Datei pruefen.
+    written = MasterDB(target)
+    expected = before + len(plan.new_rows)
+    if len(written.records) != expected:
+        print(f"GATE VERLETZT: {len(written.records)} Zeilen statt {expected} "
+              f"in {target.name} - Datei pruefen!")
+        return 3
+
+    run_dir = Path(args.out_dir) / f"run_{dt.datetime.now():%Y%m%d_%H%M%S}"
+    report_text = "\n".join(
+        ["# Ingest-Report", "",
+         f"- Eingespielt: `{args.records}`",
+         f"- Ziel: `{target.name}` ({expected} Zeilen)",
+         f"- Neue Firmen: {', '.join(new_companies) or 'keine'}",
+         f"- Ergaenzte Firmen: {len(enriched)}",
+         *[f"  - {line}" for line in enriched],
+         f"- Uebersprungen: {len(plan.skipped)}",
+         *[f"  - {who}: {why}" for who, why in plan.skipped[:50]],
+         f"- Kanonisierungs-Hinweise: {len(notes)}",
+         *[f"  - {note}" for note in notes[:50]],
+         ])
+    write_run_artifacts(run_dir, plan=plan, rejected=[],
+                        sources=sources_rows, report_text=report_text)
+    print(f"Geschrieben: {target}")
+    print(f"Artefakte:   {run_dir}")
+    return 0
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    db = MasterDB(args.master)
     taxonomy = Taxonomy.load(args.taxonomy)
+    db = MasterDB(args.db)
     report = validate_records(db.records, taxonomy, strict=args.strict)
-    print(report.render(limit=args.limit))
-    if args.out:
-        Path(args.out).write_text(report.render(limit=10_000), encoding="utf-8")
-        print(f"\nBericht geschrieben: {args.out}")
-    return 1 if (args.fail_on_error and report.errors) else 0
+    print(report.render())
+    return 1 if report.errors else 0
 
 
-def cmd_repair(args: argparse.Namespace) -> int:
-    taxonomy = Taxonomy.load(args.taxonomy)
-    target, report = run_repair(
-        args.master, taxonomy, args.out_dir,
-        version=args.version, dry_run=args.dry_run,
-    )
-    print(report.render(limit=args.limit))
-    if args.dry_run:
-        print("\n(Probelauf - es wurde nichts geschrieben.)")
-    elif target:
-        print(f"\nRepariert geschrieben: {target}")
-        run_dir = Path(args.out_dir) / f"repair_{_stamp()}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        import csv
-        rows = report.to_csv_rows()
-        if rows:
-            with (run_dir / "changes.csv").open("w", newline="", encoding="utf-8-sig") as fh:
-                writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
-        (run_dir / "report.txt").write_text(report.render(limit=100_000), encoding="utf-8")
-        print(f"Protokoll: {run_dir}")
-    else:
-        print("\nNichts zu reparieren.")
+def cmd_stats(args: argparse.Namespace) -> int:
+    db = MasterDB(args.db)
+    blocks = db.blocks()
+    tiers: dict[str, int] = {}
+    for record in db.records:
+        tier = str(record.values.get("competitor_tier") or "").strip()
+        if tier:
+            tiers[tier] = tiers.get(tier, 0) + 1
+    print(f"Datei:        {db.path.name}")
+    print(f"Zeilen:       {len(db.records)}")
+    print(f"Firmen:       {len(blocks)}")
+    print(f"Produktzeilen:{sum(len(b.product_rows) for b in blocks):5d}")
+    for tier in sorted(tiers):
+        print(f"  {tier:24s} {tiers[tier]}")
+    print("Fuellgrad je Feld (echt, 'N/A...' zaehlt als leer):")
+    total = len(db.records)
+    for name in FIELD_NAMES:
+        filled = sum(
+            1 for r in db.records
+            if _clean_value(r.values.get(name)) is not None
+        )
+        print(f"  {name:18s} {100 * filled / total:5.1f} %")
     return 0
 
 
-def cmd_profiles(args: argparse.Namespace) -> int:
-    """Listet die vorkonfigurierten Rechercheprofile."""
-    taxonomy = Taxonomy.load(args.taxonomy)
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    ok = True
+    for label, path in [("Taxonomie", DEFAULT_TAXONOMY),
+                        ("Output-Verzeichnis", DEFAULT_OUT_DIR)]:
+        exists = path.exists()
+        print(f"  {'ok ' if exists else 'FEHLT'} {label}: {path}")
+        ok = ok and (exists or label == "Output-Verzeichnis")
     try:
-        profiles = load_profiles(args.profiles)
-    except ProfileError as exc:
-        print(f"Fehler in {args.profiles}: {exc}", file=sys.stderr)
-        return 1
-
-    if not profiles:
-        print(f"Keine Profile gefunden. Erwartet wird die Datei {args.profiles}.")
-        return 0
-
-    print("=" * 72)
-    print("  VERFUEGBARE RECHERCHEPROFILE")
-    print("=" * 72)
-    faulty = 0
-    for name, profile in sorted(profiles.items()):
-        problems = validate_profile(profile, taxonomy)
-        mark = "  " if not problems else "! "
-        print(f"\n{mark}{name}")
-        print(f"    {profile.summary}")
-        if profile.description:
-            for line in _wrap(profile.description, 66):
-                print(f"    {line}")
-        for problem in problems:
-            faulty += 1
-            print(f"    FEHLER: {problem}")
-    print("\n" + "=" * 72)
-    print(f"  {len(profiles)} Profile, {faulty} Beanstandungen")
-    print("  Starten mit:  py -m cintel run --profile <name> --master \"<datei>\"")
-    return 1 if faulty else 0
-
-
-def _wrap(text: str, width: int) -> list[str]:
-    words, lines, current = str(text).split(), [], ""
-    for word in words:
-        if len(current) + len(word) + 1 > width:
-            lines.append(current)
-            current = word
-        else:
-            current = f"{current} {word}".strip()
-    if current:
-        lines.append(current)
-    return lines
-
-
-def cmd_run(args: argparse.Namespace) -> int:
-    """Der vollstaendige Durchlauf."""
-    config = yaml.safe_load(Path(args.targets).read_text(encoding="utf-8"))
-    taxonomy = Taxonomy.load(args.taxonomy)
-
-    # Ein Profil legt Suchfokus, Branche und Region fest und ueberschreibt
-    # dafuer Teile von targets.yaml.
-    if getattr(args, "profile", None):
-        try:
-            profiles = load_profiles(args.profiles)
-            config, profile = resolve(config, profiles, args.profile, taxonomy)
-        except ProfileError as exc:
-            print(f"Fehler: {exc}", file=sys.stderr)
-            return 2
-        print(f"Profil '{profile.name}': {profile.summary}")
-        if profile.version and not args.version:
-            args.version = profile.version
-        if profile.cross_check and args.cross_check == "none":
-            args.cross_check = profile.cross_check
-
-    limits = config.get("limits", {}) or {}
-    llm_config = config.get("llm", {}) or {}
-    mode = args.mode or config.get("mode", "gaps")
-
-    max_companies = args.limit or int(limits.get("max_companies_per_run", 25))
-    ledger = UsageLedger()
-    run_dir = Path(args.out_dir) / f"run_{_stamp()}"
-
-    db = MasterDB(args.master)
-    print(f"Master-DB: {len(db)} Zeilen, {len(db.blocks())} Firmen "
-          f"({Path(args.master).name})")
-
-    crawler = Crawler(
-        cache_dir=args.cache_dir,
-        delay=float(limits.get("crawl_delay_seconds", 1.5)),
-        timeout=int(limits.get("request_timeout_seconds", 20)),
-        max_pages=int(limits.get("max_pages_per_company", 12)),
-        offline=args.offline,
-    )
-    extractor = Extractor(
-        taxonomy,
-        model=llm_config.get("model", "sonnet"),
-        max_products=int(limits.get("max_products_per_company", 25)),
-        timeout=int(llm_config.get("timeout_seconds", 600)),
-        max_retries=int(llm_config.get("max_retries", 2)),
-        ledger=ledger,
-        cross_check=args.cross_check == "codex",
-    )
-    merger = Merger(db)
-    plan = MergePlan()
-    rejected: list[dict[str, Any]] = []
-    sources: list[dict[str, Any]] = []
-
-    # -- Stufe 1+2: Arbeitsliste -----------------------------------------
-    worklist: list[tuple[str, str, Any]] = []  # (Firma, URL, Block oder None)
-
-    if mode == "gaps":
-        gaps_config = config.get("gaps", {}) or {}
-        blocks = select_gap_companies(
-            db,
-            gaps_config.get("target_columns", []),
-            limit=max_companies,
-            require_url=bool(gaps_config.get("require_url", True)),
-            tier_priority=gaps_config.get("tier_priority", []),
-        )
-        for block in blocks:
-            url = first_url(block.urls[0]) if block.urls else ""
-            if url:
-                worklist.append((block.company, url, block))
-            else:
-                rejected.append({"company": block.company, "reason": "keine gueltige URL"})
-        print(f"Modus 'gaps': {len(worklist)} Firmen zur Anreicherung ausgewaehlt.")
-
-    elif mode == "new":
-        known = [(r.values.get("company"), r.values.get("url")) for r in db.records]
-        deduper = Deduper(known)
-        candidates = discover_new(
-            taxonomy, config.get("new", {}) or {}, db.company_names(),
-            model=llm_config.get("discovery_model", "sonnet"),
-            limit=max_companies * 2, ledger=ledger,
-        )
-        fresh, duplicates = deduper.partition(candidates)
-        for duplicate in duplicates:
-            rejected.append({
-                "company": duplicate.get("name"), "url": duplicate.get("homepage"),
-                "reason": f"Dublette: {duplicate.get('duplicate_reason')} "
-                          f"-> {duplicate.get('duplicate_of')}",
-            })
-        for candidate in fresh[:max_companies]:
-            worklist.append((candidate["name"], candidate["homepage"], None))
-        print(f"Modus 'new': {len(candidates)} Kandidaten, {len(fresh)} neu, "
-              f"{len(worklist)} werden bearbeitet.")
-    else:
-        print(f"Unbekannter Modus: {mode!r} (erlaubt: gaps, new)", file=sys.stderr)
-        return 2
-
-    # -- Stufe 3+4: Crawl und Extraktion ---------------------------------
-    for position, (company, url, block) in enumerate(worklist, start=1):
-        print(f"[{position}/{len(worklist)}] {company} - {url}")
-        crawl = crawler.crawl_company(company, url)
-
-        for page in crawl.pages:
-            sources.append({
-                "company": company, "url": page.url, "status": page.status,
-                "title": page.title[:120], "error": page.error[:120],
-            })
-
-        if not crawl.verified:
-            print(f"    abgelehnt: {crawl.reject_reason[:100]}")
-            rejected.append({"company": company, "url": url,
-                             "reason": crawl.reject_reason[:300]})
-            continue
-
-        if args.crawl_only:
-            print(f"    {len(crawl.ok_pages)} Seiten im Cache (crawl-only)")
-            continue
-
-        try:
-            records, meta = extractor.extract(crawl)
-        except LLMError as exc:
-            print(f"    Extraktion fehlgeschlagen: {exc}")
-            rejected.append({"company": company, "url": url,
-                             "reason": f"Extraktion: {exc}"[:300]})
-            continue
-
-        products = len(records) - 1
-        print(f"    {len(crawl.ok_pages)} Seiten -> 1 Firmenzeile + {products} Produkte")
-
-        cross = (meta or {}).get("cross_check") or {}
-        for name, values in (cross.get("disagreements") or {}).items():
-            print(f"    ! Cross-Check weicht ab bei '{name}': "
-                  f"claude={values['claude']!r} codex={values['codex']!r}")
-
-        if block is not None:
-            merger.enrich_existing(block, records, plan)
-        else:
-            plan.new_rows.extend(merger.add_new_company(records))
-
-    # -- Stufe 5: Merge --------------------------------------------------
-    print("\n" + plan.summary())
-    print(ledger.summary())
-
-    new_validation = validate_records(plan.new_rows, taxonomy, strict=True)
-    if new_validation.errors:
-        print(f"\nWARNUNG: {len(new_validation.errors)} Fehler in den neuen Zeilen:")
-        for issue in new_validation.errors[:10]:
-            print("   " + str(issue))
-
-    report_text = _build_report(
-        args, mode, plan, rejected, ledger, new_validation.render(limit=25)
-    )
-
-    if args.dry_run or (not plan.new_rows and not plan.updates):
-        write_run_artifacts(run_dir, plan=plan, rejected=rejected,
-                            sources=sources, report_text=report_text)
-        # Zwei verschiedene Gruende, dieselbe Folge - aber sie duerfen nicht
-        # gleich klingen. "Probelauf" bei einem echten Lauf ohne Ergebnis
-        # verschleiert, dass nichts gefunden wurde.
-        if args.dry_run:
-            reason = "Probelauf - keine xlsx geschrieben."
-        else:
-            reason = ("Nichts einzutragen - keine xlsx geschrieben. "
-                      "Gruende stehen im Bericht.")
-        print(f"\n({reason}) Artefakte: {run_dir}")
-        return 0
-
-    target = merger.apply(plan, args.out_dir, version=args.version)
-    write_run_artifacts(run_dir, plan=plan, rejected=rejected,
-                        sources=sources, report_text=report_text)
-    print(f"\nNeue Version : {target}")
-    print(f"Lauf-Ordner  : {run_dir}")
-    return 0
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+        print("  ok  UI-Abhaengigkeiten (fastapi, uvicorn)")
+    except ImportError:
+        print("  --  UI-Abhaengigkeiten fehlen (pip install -r requirements.txt)")
+    return 0 if ok else 1
 
 
 # --------------------------------------------------------------------------
-
-def _stamp() -> str:
-    return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-
-def _build_report(
-    args: argparse.Namespace, mode: str, plan: MergePlan,
-    rejected: list[dict[str, Any]], ledger: UsageLedger, validation: str,
-) -> str:
-    lines = [
-        f"# cintel-Lauf {_stamp()}",
-        "",
-        f"- Modus: `{mode}`",
-        f"- Master-DB: `{args.master}`",
-        f"- {plan.summary()}",
-        f"- {ledger.summary()}",
-        "",
-        "## Abgelehnt",
-        "",
-    ]
-    if rejected:
-        lines += ["| Firma | Grund |", "|---|---|"]
-        for entry in rejected[:100]:
-            reason = str(entry.get("reason", "")).replace("|", "/")[:140]
-            lines.append(f"| {entry.get('company', '')} | {reason} |")
-    else:
-        lines.append("Keine Ablehnungen.")
-
-    lines += ["", "## Gefuellte Felder", ""]
-    if plan.filled_fields:
-        lines += ["| Firma | Produkt | Feld |", "|---|---|---|"]
-        for company, product, name in plan.filled_fields[:200]:
-            lines.append(f"| {company} | {product} | {name} |")
-    else:
-        lines.append("Keine.")
-
-    lines += ["", "## Validierung der neuen Zeilen", "", "```", validation, "```"]
-    return "\n".join(lines)
-
+# Argumente
+# --------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cintel",
-        description="Competitive Intelligence Retrieval fuer die LFL Master DB",
+        description="Deterministischer Kern der Competitive Intel Master DB.",
     )
-    parser.add_argument("--verbose", "-v", action="store_true", help="Debug-Ausgaben")
-    parser.add_argument("--taxonomy", default=DEFAULT_TAXONOMY)
+    parser.add_argument("--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    doctor = sub.add_parser("doctor", help="Voraussetzungen pruefen")
-    doctor.add_argument("--master", default=None)
-    doctor.add_argument("--targets", default=DEFAULT_TARGETS)
-    doctor.set_defaults(func=cmd_doctor)
+    p_ingest = sub.add_parser("ingest", help="records.json in die Master-DB einspielen")
+    p_ingest.add_argument("records", help="Pfad zur records.json des Agenten")
+    p_ingest.add_argument("--db", required=True, help="aktuelle Master-DB (xlsx)")
+    p_ingest.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
+    p_ingest.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
+    p_ingest.add_argument("--min-confidence", type=float, default=0.35)
+    p_ingest.add_argument("--version", default=None, help="Zielversion, z.B. 2.5")
+    p_ingest.add_argument("--dry-run", action="store_true")
+    p_ingest.set_defaults(func=cmd_ingest)
 
-    validate = sub.add_parser("validate", help="Datenqualitaet pruefen")
-    validate.add_argument("--master", required=True)
-    validate.add_argument("--strict", action="store_true",
-                          help="Vokabular-Abweichungen als Fehler werten")
-    validate.add_argument("--limit", type=int, default=40)
-    validate.add_argument("--out", default=None, help="Bericht in Datei schreiben")
-    validate.add_argument("--fail-on-error", action="store_true",
-                          help="Exit-Code 1 bei Fehlern (fuer CI)")
-    validate.set_defaults(func=cmd_validate)
+    p_validate = sub.add_parser("validate", help="Bestand gegen den Vertrag pruefen")
+    p_validate.add_argument("--db", required=True)
+    p_validate.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
+    p_validate.add_argument("--strict", action="store_true")
+    p_validate.set_defaults(func=cmd_validate)
 
-    repair = sub.add_parser("repair", help="Bestandsdaten bereinigen")
-    repair.add_argument("--master", required=True)
-    repair.add_argument("--out-dir", default=DEFAULT_OUT)
-    repair.add_argument("--version", default=None, help="Zielversion, z.B. 2.3")
-    repair.add_argument("--limit", type=int, default=30)
-    repair.add_argument("--dry-run", action="store_true")
-    repair.set_defaults(func=cmd_repair)
+    p_stats = sub.add_parser("stats", help="Kennzahlen und echte Fuellgrade")
+    p_stats.add_argument("--db", required=True)
+    p_stats.set_defaults(func=cmd_stats)
 
-    profiles_cmd = sub.add_parser("profiles", help="Rechercheprofile auflisten")
-    profiles_cmd.add_argument("--profiles", default=DEFAULT_PROFILES)
-    profiles_cmd.set_defaults(func=cmd_profiles)
-
-    run = sub.add_parser("run", help="Vollstaendiger Recherchelauf")
-    run.add_argument("--master", required=True)
-    run.add_argument("--targets", default=DEFAULT_TARGETS)
-    run.add_argument("--profiles", default=DEFAULT_PROFILES)
-    run.add_argument("--profile", default=None,
-                     help="Vorkonfiguriertes Profil aus config/profiles.yaml")
-    run.add_argument("--out-dir", default=DEFAULT_OUT)
-    run.add_argument("--cache-dir", default=DEFAULT_CACHE)
-    run.add_argument("--mode", choices=["gaps", "new"], default=None)
-    run.add_argument("--limit", type=int, default=None,
-                     help="Maximale Firmenzahl (ueberschreibt targets.yaml)")
-    run.add_argument("--version", default=None, help="Zielversion, z.B. 2.3")
-    run.add_argument("--dry-run", action="store_true",
-                     help="Alles rechnen, aber keine xlsx schreiben")
-    run.add_argument("--offline", action="store_true",
-                     help="Nur den Cache nutzen, keine Netzanfragen")
-    run.add_argument("--crawl-only", action="store_true",
-                     help="Nur crawlen und cachen, keine LLM-Aufrufe")
-    run.add_argument("--cross-check", choices=["none", "codex"], default="none")
-    run.set_defaults(func=cmd_run)
-
+    p_doctor = sub.add_parser("doctor", help="Umgebung pruefen")
+    p_doctor.set_defaults(func=cmd_doctor)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)-7s %(name)s: %(message)s",
     )
     try:
         return int(args.func(args))
-    except KeyboardInterrupt:
-        print("\nAbgebrochen.", file=sys.stderr)
-        return 130
-    except (FileNotFoundError, LLMError) as exc:
-        print(f"Fehler: {exc}", file=sys.stderr)
-        return 1
+    except (IngestError, FileNotFoundError) as exc:
+        print(f"FEHLER: {exc}")
+        return 2
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
